@@ -7,12 +7,17 @@ handler = logging.FileHandler('/opt/airflow/logs/validate.log')
 logger.addHandler(handler)
 
 def validate_datasets():
+    """
+    Validate the schema of the staged datasets to ensure they meet the required structure.
+    """
     required_cols = {
         'user_metadata_staged.csv': ["user_id", "user_country", "user_age"],
         'song_metadata_staged.csv': ["track_id", "track_genre", "duration_ms"],
         'streaming_data_staged.csv': ["user_id", "track_id", "listen_time"]
     }
 
+    # Check if all required columns are present in the staged datasets
+    # This loop will raise an error if any required column is missing
     for file, columns in required_cols.items():
         try:
             df = pd.read_csv(f"/opt/airflow/data/staging/{file}")
