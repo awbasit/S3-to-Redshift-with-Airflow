@@ -163,110 +163,108 @@ class RedshiftLoader:
             CREATE TEMP TABLE temp_genre_kpis (
                 genre VARCHAR(255),
                 total_streams BIGINT,
-                unique_users BIGINT,
                 avg_stream_duration DECIMAL(10,2),
                 date_processed TIMESTAMP
             );
             """
-            
             self.execute_query(temp_table_sql)
             
-            # Insert data into temp table using VALUES
+            # Insert data using actual CSV column names
             for _, row in df.iterrows():
                 insert_sql = """
-                INSERT INTO temp_genre_kpis (genre, total_streams, unique_users, avg_stream_duration, date_processed)
-                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO temp_genre_kpis (genre, total_streams, avg_stream_duration, date_processed)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
                 """
                 self.execute_query(insert_sql, (
-                    row['genre'],
-                    int(row['total_streams']),
-                    int(row['unique_users']),
-                    float(row['avg_stream_duration'])
+                    row['track_genre'],         # from CSV
+                    int(row['listen_count']),   # from CSV
+                    float(row['avg_duration'])  # from CSV
                 ))
-            
+
             # Perform upsert
             upsert_sql = """
             BEGIN TRANSACTION;
-            
+
             DELETE FROM genre_kpis
             USING temp_genre_kpis
             WHERE genre_kpis.genre = temp_genre_kpis.genre
             AND genre_kpis.date_processed::date = temp_genre_kpis.date_processed::date;
-            
-            INSERT INTO genre_kpis (genre, total_streams, unique_users, avg_stream_duration, date_processed)
-            SELECT genre, total_streams, unique_users, avg_stream_duration, date_processed
+
+            INSERT INTO genre_kpis (genre, total_streams, avg_stream_duration, date_processed)
+            SELECT genre, total_streams, avg_stream_duration, date_processed
             FROM temp_genre_kpis;
-            
+
             END TRANSACTION;
             """
-            
             self.execute_query(upsert_sql)
             self.connection.commit()
             logger.info(f"Successfully upserted {len(df)} genre KPI records")
-            
+
         except Exception as e:
             logger.error(f"Error upserting genre KPIs: {e}")
             self.connection.rollback()
             raise
+
     
     def upsert_hourly_kpis(self, df: pd.DataFrame):
         """Upsert hourly KPIs data"""
         try:
             logger.info("Upserting hourly KPIs data")
 
+            # Convert 'hour' from int to proper timestamp if needed
+            if df['hour'].dtype == 'int64' or df['hour'].dtype == 'int':
+                logger.info("Converting 'hour' column from int to timestamp")
+                df['hour'] = pd.to_datetime(df['hour'], unit='h', origin=pd.Timestamp('today').normalize())
+
             # Create temporary table
             temp_table_sql = """
             CREATE TEMP TABLE temp_hourly_kpis (
-                hour TIMESTAMP,
-                total_streams BIGINT,
-                unique_users BIGINT,
-                unique_songs BIGINT,
-                avg_stream_duration DECIMAL(10,2),
-                date_processed TIMESTAMP
-            );
-            """
-            
+            hour TIMESTAMP,
+            unique_users BIGINT,
+            top_artists TEXT,
+            track_diversity_index DECIMAL(10, 2),
+            date_processed TIMESTAMP
+        );
+        """
             self.execute_query(temp_table_sql)
-            
-            # Insert data into temp table
+
+            # Insert data
             for _, row in df.iterrows():
                 insert_sql = """
-                INSERT INTO temp_hourly_kpis (hour, total_streams, unique_users, unique_songs, avg_stream_duration, date_processed)
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO temp_hourly_kpis (hour, unique_users, top_artists, track_diversity_index, date_processed)
+                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
                 """
                 self.execute_query(insert_sql, (
-                    row['hour'],
-                    int(row['total_streams']),
-                    int(row['unique_users']),
-                    int(row['unique_songs']),
-                    float(row['avg_stream_duration'])
+                    row['hour'],                          # Converted to timestamp
+                    int(row['unique_listeners']),
+                    row['top_artists'],
+                    float(row['track_diversity_index'])
                 ))
-            
+
             # Perform upsert
             upsert_sql = """
             BEGIN TRANSACTION;
-            
+
             DELETE FROM hourly_kpis
             USING temp_hourly_kpis
             WHERE hourly_kpis.hour = temp_hourly_kpis.hour
             AND hourly_kpis.date_processed::date = temp_hourly_kpis.date_processed::date;
-            
-            INSERT INTO hourly_kpis (hour, total_streams, unique_users, unique_songs, avg_stream_duration, date_processed)
-            SELECT hour, total_streams, unique_users, unique_songs, avg_stream_duration, date_processed
+
+            INSERT INTO hourly_kpis (hour, unique_users, top_artists, track_diversity_index, date_processed)
+            SELECT hour, unique_users, top_artists, track_diversity_index, date_processed
             FROM temp_hourly_kpis;
-            
+
             END TRANSACTION;
             """
-            
             self.execute_query(upsert_sql)
             self.connection.commit()
             logger.info(f"Successfully upserted {len(df)} hourly KPI records")
-            
+
         except Exception as e:
             logger.error(f"Error upserting hourly KPIs: {e}")
             self.connection.rollback()
             raise
-    
+
     def validate_data_quality(self):
         """Validate data quality in Redshift tables"""
         try:
