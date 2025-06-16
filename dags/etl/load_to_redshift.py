@@ -6,10 +6,14 @@ from botocore.exceptions import ClientError
 import io
 from typing import Dict, List, Optional
 import json
-# from s3_logger import get_s3_logger
+from etl.s3_logger import S3Logger
+from datetime import datetime, timedelta
 
 # Configure logging
-# logger, s3_handler = get_s3_logger(__name__, log_name="load_to_redshift")
+bucket = Variable.get("S3_BUCKET_NAME")
+log_key = f"logs/redshift/etl_redshift_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+s3_logger = S3Logger(bucket, log_key)
+logger = s3_logger.get_logger()
 
 class RedshiftLoader:
     """Class to handle loading data from S3 to Redshift"""
@@ -55,7 +59,7 @@ class RedshiftLoader:
         """Close Redshift connection"""
         if self.connection:
             self.connection.close()
-            # logger.info("Disconnected from Redshift")
+            logger.info("Disconnected from Redshift")
     
     def execute_query(self, query: str, params: Optional[tuple] = None) -> Optional[List]:
         """Execute a query on Redshift"""
@@ -66,7 +70,7 @@ class RedshiftLoader:
                     return cursor.fetchall()
                 return None
         except Exception as e:
-            # logger.error(f"Error executing query: {e}")
+            logger.error(f"Error executing query: {e}")
             self.connection.rollback()
             raise
     
@@ -99,29 +103,29 @@ class RedshiftLoader:
         """
         
         try:
-            # logger.info("Creating tables if they don't exist")
+            logger.info("Creating tables if they don't exist")
             self.execute_query(genre_kpis_table)
             self.execute_query(hourly_kpis_table)
             self.connection.commit()
-            # logger.info("Tables created successfully")
+            logger.info("Tables created successfully")
         except Exception as e:
-            # logger.error(f"Error creating tables: {e}")
+            logger.error(f"Error creating tables: {e}")
             self.connection.rollback()
             raise
     
     def read_csv_from_s3(self, key: str) -> pd.DataFrame:
         """Read CSV file from S3"""
         try:
-            # logger.info(f"Reading file from S3: s3://{self.bucket_name}/{key}")
+            logger.info(f"Reading file from S3: s3://{self.bucket_name}/{key}")
             response = self.s3_client.get_object(Bucket=self.bucket_name, Key=key)
             df = pd.read_csv(io.BytesIO(response['Body'].read()))
-            # logger.info(f"Successfully read {len(df)} rows from {key}")
+            logger.info(f"Successfully read {len(df)} rows from {key}")
             return df
         except ClientError as e:
-            # logger.error(f"Error reading file from S3: {e}")
+            logger.error(f"Error reading file from S3: {e}")
             raise
         except Exception as e:
-            # logger.error(f"Unexpected error reading CSV: {e}")
+            logger.error(f"Unexpected error reading CSV: {e}")
             raise
     
     def copy_from_s3_to_redshift(self, s3_path: str, table_name: str, copy_options: str = ""):
@@ -139,20 +143,20 @@ class RedshiftLoader:
             {copy_options}
             """
             
-            # logger.info(f"Copying data from {s3_path} to {table_name}")
+            logger.info(f"Copying data from {s3_path} to {table_name}")
             self.execute_query(copy_sql)
             self.connection.commit()
-            # logger.info(f"Successfully copied data to {table_name}")
-            
+            logger.info(f"Successfully copied data to {table_name}")
+
         except Exception as e:
-            # logger.error(f"Error copying data from S3 to Redshift: {e}")
+            logger.error(f"Error copying data from S3 to Redshift: {e}")
             self.connection.rollback()
             raise
     
     def upsert_genre_kpis(self, df: pd.DataFrame):
         """Upsert genre KPIs data"""
         try:
-            # logger.info("Upserting genre KPIs data")
+            logger.info("Upserting genre KPIs data")
             
             # Create temporary table
             temp_table_sql = """
@@ -198,18 +202,18 @@ class RedshiftLoader:
             
             self.execute_query(upsert_sql)
             self.connection.commit()
-            # logger.info(f"Successfully upserted {len(df)} genre KPI records")
+            logger.info(f"Successfully upserted {len(df)} genre KPI records")
             
         except Exception as e:
-            # logger.error(f"Error upserting genre KPIs: {e}")
+            logger.error(f"Error upserting genre KPIs: {e}")
             self.connection.rollback()
             raise
     
     def upsert_hourly_kpis(self, df: pd.DataFrame):
         """Upsert hourly KPIs data"""
         try:
-            # logger.info("Upserting hourly KPIs data")
-            
+            logger.info("Upserting hourly KPIs data")
+
             # Create temporary table
             temp_table_sql = """
             CREATE TEMP TABLE temp_hourly_kpis (
@@ -256,27 +260,27 @@ class RedshiftLoader:
             
             self.execute_query(upsert_sql)
             self.connection.commit()
-            # logger.info(f"Successfully upserted {len(df)} hourly KPI records")
+            logger.info(f"Successfully upserted {len(df)} hourly KPI records")
             
         except Exception as e:
-            # logger.error(f"Error upserting hourly KPIs: {e}")
+            logger.error(f"Error upserting hourly KPIs: {e}")
             self.connection.rollback()
             raise
     
     def validate_data_quality(self):
         """Validate data quality in Redshift tables"""
         try:
-            # logger.info("Validating data quality in Redshift")
-            
+            logger.info("Validating data quality in Redshift")
+
             # Check record counts
             genre_count_query = "SELECT COUNT(*) FROM genre_kpis WHERE date_processed::date = CURRENT_DATE"
             hourly_count_query = "SELECT COUNT(*) FROM hourly_kpis WHERE date_processed::date = CURRENT_DATE"
             
             genre_count = self.execute_query(genre_count_query)[0][0]
             hourly_count = self.execute_query(hourly_count_query)[0][0]
-            
-            # logger.info(f"Data quality check - Genre KPIs: {genre_count} records, Hourly KPIs: {hourly_count} records")
-            
+
+            logger.info(f"Data quality check - Genre KPIs: {genre_count} records, Hourly KPIs: {hourly_count} records")
+
             # Check for null values in critical columns
             null_check_queries = [
                 "SELECT COUNT(*) FROM genre_kpis WHERE genre IS NULL OR total_streams IS NULL",
@@ -286,7 +290,7 @@ class RedshiftLoader:
             for query in null_check_queries:
                 null_count = self.execute_query(query)[0][0]
                 if null_count > 0:
-                    # logger.warning(f"Found {null_count} records with null values")
+                    logger.warning(f"Found {null_count} records with null values")
                 else:
                     logger.info("No null values found in critical columns")
             
@@ -374,34 +378,28 @@ def upsert_to_redshift():
             hourly_df = loader.read_csv_from_s3(hourly_kpis_key)
             if not hourly_df.empty:
                 loader.upsert_hourly_kpis(hourly_df)
-                # logger.info("Hourly KPIs loaded successfully")
-            # else:
-            #     logger.warning("Hourly KPIs file is empty")
+                logger.info("Hourly KPIs loaded successfully")
+            else:
+                logger.warning("Hourly KPIs file is empty")
         except ClientError as e:
             if e.response['Error']['Code'] == 'NoSuchKey':
                 logger.warning("Hourly KPIs file not found in S3")
             else:
                 raise
         
-        # Validate data quality
-        # if loader.validate_data_quality():
-        #     logger.info("Data quality validation passed")
-        # else:
-        #     logger.warning("Data quality validation failed")
-        
         # Move processed files
         loader.move_processed_files()
-        
-        # logger.info("UPSERT to Redshift completed successfully")
+
+        logger.info("UPSERT to Redshift completed successfully")
         
     except psycopg2.Error as e:
-        # logger.error(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         raise
     except ClientError as e:
-        # logger.error(f"AWS S3 error: {e}")
+        logger.error(f"AWS S3 error: {e}")
         raise
     except Exception as e:
-        # logger.error(f"Unexpected error during Redshift load: {e}")
+        logger.error(f"Unexpected error during Redshift load: {e}")
         raise
     finally:
         # Always disconnect
