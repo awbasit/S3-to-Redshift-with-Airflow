@@ -82,21 +82,22 @@ class RedshiftLoader:
         CREATE TABLE IF NOT EXISTS genre_kpis (
             genre VARCHAR(255),
             total_streams BIGINT,
-            unique_users BIGINT,
+            unique_listeners BIGINT,
             avg_stream_duration DECIMAL(10,2),
             date_processed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (genre, date_processed)
         ) DISTSTYLE KEY DISTKEY (genre);
         """
         
-        # Hourly KPIs table
+        # Hourly KPIs table (updated)
         hourly_kpis_table = """
         CREATE TABLE IF NOT EXISTS hourly_kpis (
             hour TIMESTAMP,
             total_streams BIGINT,
-            unique_users BIGINT,
+            unique_listeners BIGINT,
             unique_songs BIGINT,
             avg_stream_duration DECIMAL(10,2),
+            top_artists TEXT,
             date_processed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (hour, date_processed)
         ) DISTSTYLE KEY DISTKEY (hour);
@@ -112,6 +113,7 @@ class RedshiftLoader:
             logger.error(f"Error creating tables: {e}")
             self.connection.rollback()
             raise
+
     
     def read_csv_from_s3(self, key: str) -> pd.DataFrame:
         """Read CSV file from S3"""
@@ -205,40 +207,87 @@ class RedshiftLoader:
             self.connection.rollback()
             raise
 
-    
     def upsert_hourly_kpis(self, df: pd.DataFrame):
-        """Upsert hourly KPIs data"""
+        """
+        Upsert hourly KPI data into Redshift.
+        Arguments:
+            df: pd.DataFrame containing hourly KPI metrics
+        """
+        logger.info("Upserting hourly KPIs data")
+
+        # Log data types and preview
+        logger.info("Hourly KPI input types:\n%s", df.dtypes)
+        logger.info("Hourly KPI preview:\n%s", df.head())
+
+        # Define expected columns
+        expected_columns = {
+            'hour',
+            'unique_listeners',
+            'top_artists',
+            'unique_songs',
+            'avg_stream_duration',
+            'total_streams'
+        }
+
+        # Step: Calculate total_streams if missing
+        average_streams_per_user = 2 # Default average streams per user
+        if 'total_streams' not in df.columns:
+            df['total_streams'] = df['unique_listeners'] * average_streams_per_user
+            logger.info("Calculated 'total_streams' using default avg_streams_per_user = 2")
+
+        # Check for required columns
+        logger.info("Checking for required columns in hourly KPIs")
+        required_columns = ['hour', 'unique_listeners', 'top_artists', 'track_diversity_index', 'total_streams']
+        missing = [col for col in required_columns if col not in df.columns]
+        if missing:
+            logger.error(f"Missing required columns: {missing}")
+            raise ValueError(f"Missing required columns: {missing}")
+
+        # Identify and fill missing columns
+        missing_columns = expected_columns - set(df.columns)
+        if missing_columns:
+            logger.warning(f"Missing columns in hourly_kpis.csv: {missing_columns}")
+            for col in missing_columns:
+                df[col] = 0 if col not in ['top_artists'] else ''  # empty string for text
+
+        # Convert 'hour' column to timestamp format (assuming it's already timestamp or needs conversion)
+        if not pd.api.types.is_datetime64_any_dtype(df['hour']):
+            logger.info("Converting 'hour' column to timestamp")
+            try:
+                today = datetime.utcnow().replace(minute=0, second=0, microsecond=0)
+                df['hour'] = df['hour'].apply(lambda h: today.replace(hour=0) + timedelta(hours=int(h)))
+            except Exception as e:
+                logger.error(f"Error converting 'hour' to timestamp: {e}")
+                raise
+
         try:
-            logger.info("Upserting hourly KPIs data")
-
-            # Convert 'hour' from int to proper timestamp if needed
-            if df['hour'].dtype == 'int64' or df['hour'].dtype == 'int':
-                logger.info("Converting 'hour' column from int to timestamp")
-                df['hour'] = pd.to_datetime(df['hour'], unit='h', origin=pd.Timestamp('today').normalize())
-
             # Create temporary table
             temp_table_sql = """
             CREATE TEMP TABLE temp_hourly_kpis (
-            hour TIMESTAMP,
-            unique_users BIGINT,
-            top_artists TEXT,
-            track_diversity_index DECIMAL(10, 2),
-            date_processed TIMESTAMP
-        );
-        """
+                hour TIMESTAMP,
+                total_streams BIGINT,
+                unique_listeners BIGINT,
+                unique_songs BIGINT,
+                avg_stream_duration DECIMAL(10,2),
+                top_artists TEXT,
+                date_processed TIMESTAMP
+            );
+            """
             self.execute_query(temp_table_sql)
 
-            # Insert data
+            # Insert data into temp table
             for _, row in df.iterrows():
                 insert_sql = """
-                INSERT INTO temp_hourly_kpis (hour, unique_users, top_artists, track_diversity_index, date_processed)
-                VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO temp_hourly_kpis (hour, total_streams, unique_listeners, unique_songs, avg_stream_duration, top_artists, date_processed)
+                VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 """
                 self.execute_query(insert_sql, (
-                    row['hour'],                          # Converted to timestamp
+                    row['hour'],
+                    int(row['total_streams']),
                     int(row['unique_listeners']),
-                    row['top_artists'],
-                    float(row['track_diversity_index'])
+                    int(row['unique_songs']),
+                    float(row['avg_stream_duration']),
+                    str(row['top_artists'])
                 ))
 
             # Perform upsert
@@ -250,8 +299,8 @@ class RedshiftLoader:
             WHERE hourly_kpis.hour = temp_hourly_kpis.hour
             AND hourly_kpis.date_processed::date = temp_hourly_kpis.date_processed::date;
 
-            INSERT INTO hourly_kpis (hour, unique_users, top_artists, track_diversity_index, date_processed)
-            SELECT hour, unique_users, top_artists, track_diversity_index, date_processed
+            INSERT INTO hourly_kpis (hour, total_streams, unique_listeners, unique_songs, avg_stream_duration, top_artists, date_processed)
+            SELECT hour, total_streams, unique_listeners, unique_songs, avg_stream_duration, top_artists, date_processed
             FROM temp_hourly_kpis;
 
             END TRANSACTION;
