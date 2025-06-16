@@ -184,7 +184,7 @@ class S3DataValidator:
     def _validate_streaming_data(self, df: pd.DataFrame) -> Dict[str, Any]:
         """Specific validation for streaming data"""
         results = {'specific_errors': [], 'specific_warnings': []}
-        
+
         # Check for null values in critical columns
         critical_columns = ['user_id', 'track_id', 'listen_time']
         for col in critical_columns:
@@ -192,26 +192,39 @@ class S3DataValidator:
                 null_count = df[col].isnull().sum()
                 if null_count > 0:
                     results['specific_errors'].append(f"Found {null_count} null {col} values")
-        
+
         # Check for duplicate streaming records
-        if 'user_id' in df.columns and 'track_id' in df.columns and 'listen_time' in df.columns:
+        if all(col in df.columns for col in ['user_id', 'track_id', 'listen_time']):
             duplicate_streams = df.duplicated(subset=['user_id', 'track_id', 'listen_time']).sum()
             if duplicate_streams > 0:
                 results['specific_warnings'].append(f"Found {duplicate_streams} duplicate streaming records")
 
-        # Check for negative listen times
+        # Ensure listen_time is numeric
         if 'listen_time' in df.columns:
+            df['listen_time'] = pd.to_numeric(df['listen_time'], errors='coerce')
+
+            # Count invalid listen_time values (NaNs from failed conversion)
+            invalid_listen_times = df['listen_time'].isna().sum()
+            if invalid_listen_times > 0:
+                warning_msg = f"{invalid_listen_times} listen_time values could not be converted to numeric"
+                logger.warning(warning_msg)
+                results['specific_warnings'].append(warning_msg)
+
+            # Check for negative listen times
             negative_listen_times = (df['listen_time'] < 0).sum()
             if negative_listen_times > 0:
-                results['specific_warnings'].append(f"Found {negative_listen_times} negative listen_time values")
+                warning_msg = f"Found {negative_listen_times} negative listen_time values"
+                logger.warning(warning_msg)
+                results['specific_warnings'].append(warning_msg)
 
         # Check for unrealistic durations (e.g., > 30 minutes)
         if 'duration_ms' in df.columns:
-            long_streams = (df['duration_ms'] > 1800000).sum()  # 30 minutes in milliseconds
+            long_streams = (pd.to_numeric(df['duration_ms'], errors='coerce') > 1800000).sum()
             if long_streams > 0:
                 results['specific_warnings'].append(f"Found {long_streams} streams longer than 30 minutes")
-        
+
         return results
+
     
     def save_validation_report(self, validation_results: List[Dict[str, Any]]):
         """Save validation report to S3"""
