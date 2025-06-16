@@ -36,10 +36,8 @@ services:
       _AIRFLOW_WWW_USER_ROLE: Admin
     volumes:
       - ./dags:/opt/airflow/dags
-      - ./extract:/opt/airflow/extract
-      - ./validate:/opt/airflow/validate
-      - ./transform:/opt/airflow/transform
-      - ./load:/opt/airflow/load
+      - ./scripts:/opt/airflow/scripts
+      - ./data:/opt/airflow/data
       - ./logs:/opt/airflow/logs
     command: >
       bash -c "
