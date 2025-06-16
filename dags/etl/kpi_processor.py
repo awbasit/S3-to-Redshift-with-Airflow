@@ -1,22 +1,34 @@
 import pandas as pd
 import logging
+from etl.s3_logger import S3Logger
+from airflow.models import Variable
+from datetime import datetime, timedelta
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = logging.FileHandler('/opt/airflow/logs/transform.log')
-logger.addHandler(handler)
+
+# Configure logging
+bucket = Variable.get("S3_BUCKET_NAME")
+log_key = f"logs/metadata/etl_kpi_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+s3_logger = S3Logger(bucket, log_key)
+logger = s3_logger.get_logger()
 
 def compute_kpis():
     """"Compute KPIs from the staged streaming data and metadata."""
     try:
         # Read the staged user and song metadata, and streaming data
-        staging_dir = '/opt/airflow/data/staging/'
-        output_dir = '/opt/airflow/data/output/'
-        user_df = pd.read_csv(f'{staging_dir}user_metadata_staged.csv')
-        song_df = pd.read_csv(f'{staging_dir}song_metadata_staged.csv')
-        stream_df = pd.read_csv(f'{staging_dir}streaming_data_staged.csv')
+        staging_prefix = Variable.get("STAGING_PREFIX", default_var="data/staging/")
+        user_path = f's3://{bucket}/{staging_prefix}user_metadata_staged.csv'
+        song_path = f's3://{bucket}/{staging_prefix}song_metadata_staged.csv'
+        stream_path = f's3://{bucket}/{staging_prefix}streaming_data_staged.csv'
 
-        # Ensure the dataframes have the expected columns
+        # Define paths for KPI outputs
+        genre_kpi_path = f's3://{bucket}/{staging_prefix}genre_kpis.csv'
+        hourly_kpi_path = f's3://{bucket}/{staging_prefix}hourly_kpis.csv'
+
+        logger.info("Reading staged CSVs from S3...")
+        user_df = pd.read_csv(user_path)
+        song_df = pd.read_csv(song_path)
+        stream_df = pd.read_csv(stream_path)
+
         # Merging the dataframes on user_id and track_id
         merged = stream_df.merge(song_df, on='track_id').merge(user_df, on='user_id')
         merged['listen_time'] = pd.to_datetime(merged['listen_time'])
@@ -31,7 +43,10 @@ def compute_kpis():
             listen_count=('track_id', 'count'),
             avg_duration=('duration_ms', 'mean')
         ).reset_index()
-        genre_kpis.to_csv(f'{output_dir}genre_kpis.csv', index=False)
+
+        # Save Genre KPIs to S3
+        with open(genre_kpi_path, 'w') as f:
+            genre_kpis.to_csv(f, index=False)
 
         """
         3. Hourly KPIs
@@ -39,14 +54,19 @@ def compute_kpis():
         5. Top artist per hour
         6. Track diversity index per hour
         """
+        # Compute Hourly KPIs
         hourly_kpis = merged.groupby('hour').agg(
             unique_listeners=('user_id', pd.Series.nunique),
-            top_artists=('track_id', lambda x: x.mode()[0]),
-            track_diversity_index=('track_id', lambda x: len(set(x))/len(x))
+            top_artists=('track_id', lambda x: x.mode().iloc[0] if not x.mode().empty else None),
+            track_diversity_index=('track_id', lambda x: len(set(x)) / len(x))
         ).reset_index()
-        hourly_kpis.to_csv(f'{output_dir}hourly_kpis.csv', index=False)
 
-        logger.info("KPI computation successful.")
+        # Save Hourly KPIs to S3
+        with open(hourly_kpi_path, 'w') as f:
+            hourly_kpis.to_csv(f, index=False)
+
+        logger.info("KPI computation and export to S3 completed successfully.")
+
     except Exception as e:
         logger.error(f"KPI transformation failed: {e}")
         raise
