@@ -3,3 +3,7 @@ __pycache__
 logs
 plugins
 local
+archive_files
+hs_err_pid7128.log
+hs_err_pid23528.log
+replay_pid23528.log

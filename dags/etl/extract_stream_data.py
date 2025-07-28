@@ -44,7 +44,7 @@ class S3StreamDataExtractor:
                 if obj['Key'].endswith('.csv') and obj['Size'] > 0
             ]
             
-            # Sort by key name (assuming timestamp in filename)
+            # Sort by key name
             files.sort()
 
             logger.info(f"Found {len(files)} streaming files")
